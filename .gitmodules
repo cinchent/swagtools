@@ -1,0 +1,3 @@
+[submodule "swagger-python-codegen"]
+	path = swagger-python-codegen
+	url = https://github.com/cinchent/swagger-python-codegen

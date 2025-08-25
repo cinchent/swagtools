@@ -1,0 +1,2 @@
+include MANIFEST.in README.md LICENSE.txt requirements.txt
+include skeleton_client/service_config.sh

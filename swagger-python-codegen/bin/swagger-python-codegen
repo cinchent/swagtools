@@ -1,0 +1,3 @@
+#!/usr/bin/env python3
+from swagger_python_codegen import generate
+generate.main()

@@ -1,0 +1,173 @@
+{{>partial_header}}
+
+from __future__ import absolute_import
+
+import os
+import logging
+from http import HTTPStatus
+from urllib.parse import urlencode
+import ssl
+
+try:
+    import certifi
+except ImportError as _exc:
+    raise ImportError("Swagger Python client requires 'certifi' package") from _exc
+
+try:
+    import requests
+except ImportError as _exc:
+    raise ImportError("Swagger Python client requires 'requests' package") from _exc
+
+
+logger = logging.getLogger(__name__)
+
+
+class RESTClientObject:  # pylint:disable=too-few-public-methods
+    """ Wrapper for requests.Request object. """
+
+    SUPPORTED_METHODS = ['GET', 'HEAD', 'DELETE', 'POST', 'PUT', 'PATCH', 'OPTIONS']
+
+    def __init__(self, configuration, maxsize=None, **_):
+        self.session = requests.Session()
+
+        if configuration.ssl_ca_cert:
+            ca_certs = configuration.ssl_ca_cert
+        else:
+            ca_certs = certifi.where()  # default to  Mozilla's root certificates.
+        if ca_certs:
+            os.environ['REQUESTS_CA_BUNDLE'] = str(ca_certs)
+
+        if configuration.verify_ssl and configuration.cert_file:
+            cert = configuration.cert_file
+            if configuration.key_file:
+                cert = (cert, configuration.key_file)
+            self.session.cert = cert
+            self.session.verify = True
+        else:
+            self.session.cert = None
+            self.session.verify = False
+
+        if configuration.assert_hostname is not None:
+            context = ssl.SSLContext(ssl.PROTOCOL_TLSv1)
+            context.verify_mode = configuration.verify_ssl
+            context.check_hostname = bool(configuration.assert_hostname)
+
+        if maxsize is None:
+            maxsize = configuration.connection_pool_maxsize
+        if not maxsize:
+            self.session.adapters['http://'].poolmanager.connection_pool_kw['maxsize'] = maxsize
+
+        if configuration.proxy:
+            self.session.proxies = dict(http=configuration.proxy)
+
+        for method in self.SUPPORTED_METHODS:
+            setattr(self, method, (lambda m: lambda url, **kwargs: self.request(m, url, **kwargs))(method))
+
+    def request(self, method, url, query_params=None, headers=None, body=None, post_params=None,
+                _preload_content=True, _request_timeout=None):
+        """
+        Submit request.
+
+        :param method:           HTTP request method
+        :param url:              HTTP request URL
+        :param query_params:     Query parameters in the URL
+        :param headers:          HTTP request headers
+        :param body:             Request JSON body, for `application/json` content type
+        :param post_params:      Request POST parameters, for content types
+                                 `application/x-www-form-urlencoded` and `multipart/form-data`
+        :param _preload_content: False => RESTResponse object will be returned without reading/decoding
+                                 response data; suitable for streaming response
+        :param _request_timeout: Timeout (sec) for this request:
+                                  * single number => total request timeout
+                                  * pair => (connection, read) timeouts (see `requests`)
+                                  * None => unlimited request time
+        """
+        method = method.upper()
+        assert method in self.SUPPORTED_METHODS
+        if post_params and body:
+            raise ValueError(
+                "body parameter cannot be used with post_params parameter."
+            )
+
+        headers = headers or {}
+        content_type = headers.setdefault('Content-Type', 'application/json')
+
+        for i, (k, v) in enumerate(query_params or []):
+            if isinstance(v, dict):
+                query_params[i] = (k, str(v))
+
+        for i, (k, v) in enumerate(post_params or []):
+            if isinstance(v, dict):
+                post_params[i] = (k, str(v))
+
+        request_params = dict(params=query_params, headers=headers, stream=not _preload_content,
+                              timeout=_request_timeout)
+        if 'json' in content_type.lower():
+            request_params['json'] = body
+        else:
+            if 'form' in content_type.lower():
+                if content_type.lower() == 'multipart/form-data':
+                    request_params['files'] = post_params or []
+                else:
+                    request_params['data'] = post_params or {}
+            else:
+                request_params['data'] = body
+
+        resp = error = None
+        if request_params.get('files'):
+            headers.pop('Content-Type', None)
+            if query_params:
+                url += '?' + urlencode(query_params)
+            try:
+                adapter = self.session.get_adapter(url)
+                # noinspection PyUnresolvedReferences
+                resp = adapter.poolmanager.request(method, url, headers=headers, fields=post_params,
+                                                   encode_multipart=True, preload_content=_preload_content,
+                                                   timeout=_request_timeout)
+            except (Exception, BaseException) as exc:
+                error = exc
+        else:
+            try:
+                resp = self.session.request(method, url, **request_params)
+            except requests.exceptions.RequestException as exc:
+                error = exc
+
+        if error:
+            msg = "{}\n{}".format(type(error).__name__, str(error))
+            raise ApiException(status=0, reason=msg)
+
+        if _preload_content and not hasattr(resp, 'status'):
+            resp.status = resp.status_code
+            resp.data = resp.content.decode(encoding='utf-8')
+            resp.__class__.getheaders = lambda this: this.headers
+            resp.__class__.getheader = lambda this, name, default=None: this.headers.get(name, default)
+            logger.debug("Response body: %s", resp.data)
+
+        if not HTTPStatus.OK <= resp.status < HTTPStatus.MULTIPLE_CHOICES:
+            raise ApiException(http_resp=resp)
+
+        return resp
+
+
+class ApiException(Exception):
+    """ Client-side API request exception wrapper. """
+    def __init__(self, status=None, reason=None, http_resp=None):  # pylint:disable=super-init-not-called
+        if http_resp is not None:
+            self.status = http_resp.status
+            self.reason = http_resp.reason
+            self.body = http_resp.data
+            self.headers = http_resp.getheaders()
+        else:
+            self.status = status
+            self.reason = reason
+            self.body = None
+            self.headers = None
+
+    def __str__(self):
+        """ Custom error messages for exception. """
+        error_message = "({})\nReason: {}\n".format(self.status, self.reason)
+        if self.headers:
+            error_message += "HTTP response headers: {}\n".format(self.headers)
+        if self.body:
+            error_message += "HTTP response body: {}\n".format(self.body)
+        return error_message

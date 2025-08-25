@@ -107,7 +107,6 @@ venv.bak/
 
 # PyCharm
 .idea/
-.DS_Store
 
 # Application -- generated code:
-swagger.json
+skeleton_client/ext/

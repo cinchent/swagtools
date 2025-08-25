@@ -1,0 +1,2 @@
+include MANIFEST.in README.md CHANGELOG.md LICENSE.txt requirements.txt
+include swagtools_skeleton_client/requirements.txt swagtools_skeleton_client/skeleton_client/service_config.sh
